@@ -3,7 +3,7 @@ import {
   Search, Clock, MapPin, User, BookOpen, Upload, 
   CheckCircle, AlertCircle, XCircle, Plus, Edit, 
   Trash2, Settings, ChevronRight, Calendar, Users, Briefcase, ArrowLeft,
-  Repeat, UserCheck, UserMinus
+  Repeat, UserCheck, UserMinus, FileText
 } from 'lucide-react';
 import { 
   initializeApp 
@@ -534,8 +534,88 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
   const [isProcessing, setIsProcessing] = useState(false);
   const [parseResult, setParseResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  
+  // State Baru untuk Mod Tampal Teks
+  const [uploadMethod, setUploadMethod] = useState('pdf'); // 'pdf' | 'text'
+  const [manualText, setManualText] = useState('');
 
-  // --- PDF & AI PROCESSING LOGIC ---
+  // --- KOD AI GEMINI YANG DIKONGSI BERSAMA (PDF & TEKS) ---
+  const processWithAI = async (textToProcess) => {
+    setIsProcessing(true);
+    setErrorMsg('');
+    setParseResult(null);
+
+    try {
+      // --- AUTODETECT PERSEKITARAN ---
+      // Sistem kenal pasti sama ada ia diuji di skrin ini (Canvas) atau di Internet (Vercel)
+      const isPreviewEnv = typeof __app_id !== 'undefined';
+      const apiKey = isPreviewEnv ? "" : "AIzaSyAbyj3Kkvw_zaWBUYbpN0DPIA0XO2oBNsk"; 
+      const modelName = isPreviewEnv ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash";
+
+      const systemPrompt = `
+      Anda adalah pakar penganalisis data jadual waktu sekolah (OCR + NLP) yang sangat tepat.
+      Teks di bawah adalah data jadual waktu sekolah.
+      
+      TUGAS ANDA:
+      Baca teks tersebut, fahami lajur masa (cth: 07:30 - 08:00) dan baris hari (cth: Isnin, Selasa).
+      Kenal pasti nama guru dan subjek utama mereka.
+      Bina rekod jadual berstruktur bagi setiap kelas yang diajar. Abaikan waktu rehat (REHAT) atau perhimpunan jika tiada kelas spesifik.
+      
+      FORMAT OUTPUT (JSON SAHAJA Tanpa backticks markdown):
+      {
+        "guru": [
+          {"nama": "Nama Penuh Guru (Cari di bahagian atas jadual atau footer)", "subjek": "Subjek Dominan"}
+        ],
+        "jadual": [
+          {
+            "guru_nama": "Mesti padan tepat dengan nama di atas",
+            "hari": "Isnin/Selasa/Rabu/Khamis/Jumaat", 
+            "masa_mula": "HH:mm (format 24-jam, cth: 07:30)", 
+            "masa_tamat": "HH:mm (format 24-jam, cth: 08:30)", 
+            "kelas": "Nama Kelas (cth: 5 AMANAH)", 
+            "subjek": "Nama Subjek (cth: MATEMATIK)", 
+            "lokasi": "Bilik Darjah / Makmal / Padang (Letak 'Bilik Darjah' jika tidak pasti)"
+          }
+        ]
+      }
+      
+      PANDUAN PENTING UNTUK KETEPATAN:
+      1. Jika sel mengandungi cantuman Kelas & Subjek (cth: "5 AMANAH MATEMATIK" atau "5A / MT"), pisahkan dengan bijak.
+      2. Gabungkan slot masa yang berturutan untuk subjek dan kelas yang sama.
+      3. Singkatan hari: ISN=Isnin, SEL=Selasa, RAB=Rabu, KHA=Khamis, JUM=Jumaat.
+      4. Abaikan garisan kosong atau teks yang tidak relevan.
+      `;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `TEKS JADUAL WAKTU:\n${textToProcess.substring(0, 8000)}` }] }],
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("Butiran Ralat API Gemini:", errorData);
+        throw new Error(errorData.error?.message || "Ralat Pelayan Gemini.");
+      }
+
+      const result = await response.json();
+      const rawJsonText = result.candidates[0].content.parts[0].text;
+      const parsedData = JSON.parse(rawJsonText);
+      
+      setParseResult(parsedData);
+    } catch (err) {
+      console.error("Ralat penuh:", err);
+      setErrorMsg("Gagal memproses data dengan AI. Sila pastikan teks jadual tidak terlalu panjang.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // --- PDF UPLOAD LOGIC ---
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file || file.type !== 'application/pdf') {
@@ -544,11 +624,7 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
     }
 
     setIsProcessing(true);
-    setErrorMsg('');
-    setParseResult(null);
-
     try {
-      // 1. Extract text using pdf.js dengan Teknik SPATIAL SORTING
       const pdfjsLib = window['pdfjs-dist/build/pdf'];
       if (!pdfjsLib) throw new Error("PDF Library belum sedia. Sila cuba sebentar lagi.");
       
@@ -589,65 +665,23 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
         extractedText += pageText + "\n\n--- MUKA SURAT SETERUSNYA ---\n\n";
       }
 
-      // 2. Hantar ke Gemini AI dengan Prompt yang Dipertingkat
-      const apiKey = "AIzaSyAbyj3Kkvw_zaWBUYbpN0DPIA0XO2oBNsk"; 
-      const systemPrompt = `
-      Anda adalah pakar penganalisis data jadual waktu sekolah (OCR + NLP) yang sangat tepat.
-      Teks di bawah diekstrak daripada PDF jadual waktu sekolah. Ia telah disusun mengekalkan struktur baris dan lajur menggunakan pemisah " | ".
-      
-      TUGAS ANDA:
-      Baca teks matriks tersebut, fahami lajur masa (cth: 07:30 - 08:00) dan baris hari (cth: Isnin, Selasa).
-      Kenal pasti nama guru dan subjek utama mereka.
-      Bina rekod jadual berstruktur bagi setiap kelas yang diajar. Abaikan waktu rehat (REHAT) atau perhimpunan jika tiada kelas spesifik.
-      
-      FORMAT OUTPUT (JSON SAHAJA Tanpa backticks markdown):
-      {
-        "guru": [
-          {"nama": "Nama Penuh Guru (Cari di bahagian atas jadual atau footer)", "subjek": "Subjek Dominan"}
-        ],
-        "jadual": [
-          {
-            "guru_nama": "Mesti padan tepat dengan nama di atas",
-            "hari": "Isnin/Selasa/Rabu/Khamis/Jumaat", 
-            "masa_mula": "HH:mm (format 24-jam, cth: 07:30)", 
-            "masa_tamat": "HH:mm (format 24-jam, cth: 08:30)", 
-            "kelas": "Nama Kelas (cth: 5 AMANAH)", 
-            "subjek": "Nama Subjek (cth: MATEMATIK)", 
-            "lokasi": "Bilik Darjah / Makmal / Padang (Letak 'Bilik Darjah' jika tidak pasti)"
-          }
-        ]
-      }
-      
-      PANDUAN PENTING UNTUK KETEPATAN:
-      1. Jika sel mengandungi cantuman Kelas & Subjek (cth: "5 AMANAH MATEMATIK" atau "5A / MT"), pisahkan dengan bijak.
-      2. Gabungkan slot masa yang berturutan untuk subjek dan kelas yang sama.
-      3. Singkatan hari: ISN=Isnin, SEL=Selasa, RAB=Rabu, KHA=Khamis, JUM=Jumaat.
-      4. Abaikan garisan kosong atau teks yang tidak relevan.
-      `;
+      // Hantar teks PDF yang telah diekstrak ke Gemini
+      await processWithAI(extractedText);
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `TEKS JADUAL WAKTU (Bentuk Visual):\n${extractedText.substring(0, 8000)}` }] }],
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          generationConfig: { responseMimeType: "application/json" }
-        })
-      });
-
-      if (!response.ok) throw new Error("Ralat API AI Gemini.");
-
-      const result = await response.json();
-      const rawJsonText = result.candidates[0].content.parts[0].text;
-      const parsedData = JSON.parse(rawJsonText);
-      
-      setParseResult(parsedData);
     } catch (err) {
       console.error(err);
-      setErrorMsg("Ralat mengekstrak atau memproses PDF: " + err.message);
-    } finally {
+      setErrorMsg("Ralat mengekstrak PDF: " + err.message);
       setIsProcessing(false);
     }
+  };
+
+  // --- MANUAL TEXT SUBMIT LOGIC ---
+  const handleTextSubmit = () => {
+    if (!manualText.trim()) {
+      setErrorMsg("Sila masukkan jadual dalam bentuk teks terlebih dahulu.");
+      return;
+    }
+    processWithAI(manualText);
   };
 
   const simpanDataAi = async () => {
@@ -691,6 +725,7 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
       await batch.commit();
 
       setParseResult(null);
+      setManualText('');
       setActiveTab('guru');
       setErrorMsg("Data jadual berjaya disimpan ke pangkalan data!"); 
       setTimeout(() => setErrorMsg(''), 4000);
@@ -747,7 +782,7 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
           onClick={() => setActiveTab('upload')} 
           className={`px-6 py-4 font-medium text-sm flex items-center transition ${activeTab === 'upload' ? 'bg-white border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-500 hover:text-gray-800'}`}
         >
-          <Upload className="w-4 h-4 mr-2" /> Muat Naik PDF Jadual (AI)
+          <Upload className="w-4 h-4 mr-2" /> Muat Naik Data AI (PDF/Teks)
         </button>
       </div>
 
@@ -803,35 +838,83 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
               <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-indigo-600">
                 <Upload className="w-8 h-8" />
               </div>
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Muat Naik Jadual PDF</h2>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Muat Naik Data Jadual</h2>
               <p className="text-gray-500">Sistem AI akan membaca dan mengekstrak maklumat secara automatik.</p>
             </div>
 
             {!parseResult ? (
-              <div className="border-2 border-dashed border-gray-300 rounded-2xl p-12 text-center hover:bg-gray-50 transition bg-white relative">
-                <input 
-                  type="file" 
-                  accept=".pdf" 
-                  onChange={handlePdfUpload} 
-                  disabled={isProcessing}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed" 
-                />
-                {isProcessing ? (
-                  <div className="space-y-4">
-                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600 mx-auto"></div>
-                    <p className="text-indigo-600 font-medium">AI sedang memproses dokumen PDF...</p>
-                    <p className="text-sm text-gray-400">Proses OCR dan NLP sedang berjalan</p>
-                  </div>
-                ) : (
-                  <div>
-                    <p className="text-gray-700 font-medium mb-1">Klik atau seret fail PDF ke sini</p>
-                    <p className="text-sm text-gray-400">Sokong format jadual standard sekolah</p>
-                    <button className="mt-4 px-4 py-2 bg-indigo-50 text-indigo-700 font-medium rounded-lg pointer-events-none">
-                      Pilih Fail
-                    </button>
+              <>
+                <div className="flex justify-center space-x-4 mb-8">
+                  <button 
+                    onClick={() => setUploadMethod('pdf')} 
+                    className={`px-5 py-2.5 rounded-lg font-bold flex items-center transition ${uploadMethod === 'pdf' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                  >
+                    <Upload className="w-4 h-4 mr-2" /> Muat Naik fail PDF
+                  </button>
+                  <button 
+                    onClick={() => setUploadMethod('text')} 
+                    className={`px-5 py-2.5 rounded-lg font-bold flex items-center transition ${uploadMethod === 'text' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                  >
+                    <FileText className="w-4 h-4 mr-2" /> Tampal Teks Manual
+                  </button>
+                </div>
+
+                {uploadMethod === 'pdf' && (
+                  <div className="border-2 border-dashed border-gray-300 rounded-2xl p-12 text-center hover:bg-gray-50 transition bg-white relative">
+                    <input 
+                      type="file" 
+                      accept=".pdf" 
+                      onChange={handlePdfUpload} 
+                      disabled={isProcessing}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed" 
+                    />
+                    {isProcessing ? (
+                      <div className="space-y-4">
+                        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600 mx-auto"></div>
+                        <p className="text-indigo-600 font-medium">AI sedang memproses dokumen PDF...</p>
+                        <p className="text-sm text-gray-400">Proses OCR dan NLP sedang berjalan</p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-gray-700 font-medium mb-1">Klik atau seret fail PDF ke sini</p>
+                        <p className="text-sm text-gray-400">Sokong format jadual standard sekolah</p>
+                        <button className="mt-4 px-4 py-2 bg-indigo-50 text-indigo-700 font-medium rounded-lg pointer-events-none">
+                          Pilih Fail PDF
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+
+                {uploadMethod === 'text' && (
+                  <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
+                    <label className="block text-sm font-bold text-gray-700 mb-2">
+                      Tampal data jadual di sini (dari Excel, Word, atau Salinan Web):
+                    </label>
+                    <textarea 
+                      className="w-full h-56 border border-gray-300 rounded-lg p-4 focus:ring-2 focus:ring-indigo-500 focus:outline-none mb-4 text-sm bg-gray-50 text-gray-800"
+                      placeholder="Contoh:&#10;Hari | Masa | Kelas | Subjek&#10;Isnin | 07:30 - 08:30 | 5 Amanah | Matematik&#10;Selasa | 09:00 - 10:00 | 4 Bestari | Sains"
+                      value={manualText}
+                      onChange={(e) => setManualText(e.target.value)}
+                      disabled={isProcessing}
+                    ></textarea>
+                    
+                    {isProcessing ? (
+                      <div className="flex justify-center items-center py-3 bg-indigo-50 rounded-xl border border-indigo-100">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600 mr-3"></div>
+                        <p className="text-indigo-700 font-bold text-sm">AI sedang membaca dan menyusun jadual teks...</p>
+                      </div>
+                    ) : (
+                      <button 
+                        onClick={handleTextSubmit}
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-xl shadow-md transition"
+                      >
+                        Bina Jadual dari Teks Ini
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
             ) : (
               <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
                 <div className="flex items-center justify-between mb-4 pb-4 border-b border-gray-100">
@@ -854,7 +937,7 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
 
                 <div className="bg-blue-50 text-blue-800 p-4 rounded-lg text-sm mb-6 flex items-start">
                   <AlertCircle className="w-5 h-5 mr-2 flex-shrink-0 mt-0.5" />
-                  <p>Sila semak jumlah guru dan slot. AI membuat tekaan terbaik (best-effort) berdasarkan corak teks dalam PDF. Klik butang di bawah untuk masukkan data ini ke pangkalan data.</p>
+                  <p>Sila semak jumlah guru dan slot. AI membuat tekaan terbaik (best-effort) berdasarkan corak teks. Klik butang di bawah untuk masukkan data ini ke pangkalan data.</p>
                 </div>
 
                 <button 
