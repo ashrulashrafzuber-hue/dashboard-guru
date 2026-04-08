@@ -62,7 +62,7 @@ export default function App() {
           try {
             await signInWithCustomToken(auth, __initial_auth_token);
           } catch (tokenError) {
-            console.warn("Token mismatch (menggunakan config Firebase sendiri). Bertukar ke log masuk Anonymous...", tokenError);
+            console.warn("Token mismatch. Bertukar ke log masuk Anonymous...", tokenError);
             await signInAnonymously(auth);
           }
         } else {
@@ -118,7 +118,7 @@ export default function App() {
     };
   }, [user]);
 
-  // 2. Timer untuk Auto-Update Status (Setiap 1 minit, tapi demo set 10 saat)
+  // 2. Timer untuk Auto-Update Status
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
@@ -198,34 +198,6 @@ export default function App() {
     });
     return { total: teachers.length, mengajar, rehat, tidakHadir };
   }, [teachers, schedules, currentTime]);
-
-  // --- MOCK DATA GENERATOR (Untuk Demo Awal) ---
-  const generateMockData = async () => {
-    if (!user) return;
-    const tRef = collection(db, 'artifacts', appId, 'users', user.uid, 'guru');
-    const sRef = collection(db, 'artifacts', appId, 'users', user.uid, 'jadual');
-    const kRef = collection(db, 'artifacts', appId, 'users', user.uid, 'ketiadaan');
-    
-    const currH = new Date().getHours().toString().padStart(2, '0');
-    const currM = new Date().getMinutes().toString().padStart(2, '0');
-    const nextH = (new Date().getHours() + 1).toString().padStart(2, '0');
-
-    // Tambah Guru 1
-    const t1 = await addDoc(tRef, { nama: 'Ahmad bin Ali', subjek: 'Matematik' });
-    // Tambah Guru 2
-    const t2 = await addDoc(tRef, { nama: 'Siti Sarah', subjek: 'Sains' });
-    // Tambah Guru 3
-    const t3 = await addDoc(tRef, { nama: 'Chong Wei', subjek: 'Sejarah' });
-
-    // Tambah Jadual (Guru 1 sedang mengajar sekarang)
-    await addDoc(sRef, { guru_id: t1.id, hari: getTodayDayString(), masa_mula: `${currH}:00`, masa_tamat: `${nextH}:00`, kelas: '5 Amanah', subjek: 'Matematik', lokasi: 'Bilik Darjah 5A' });
-    // Jadual Guru 2 (Tiada kelas sekarang)
-    await addDoc(sRef, { guru_id: t2.id, hari: getTodayDayString(), masa_mula: '07:30', masa_tamat: '08:30', kelas: '3 Cekal', subjek: 'Sains', lokasi: 'Makmal Sains 1' });
-    
-    // Tambah Rekod Ketiadaan Guru 3 (Sepenuh Hari)
-    await addDoc(kRef, { guru_id: t3.id, tarikh: getTodayDateString(), masa_mula: '07:30', masa_tamat: '14:30', sebab: 'Tidak Hadir', lokasi: 'Klinik Kesihatan' });
-  };
-
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 font-sans">
@@ -330,9 +302,6 @@ export default function App() {
                     <AlertCircle className="w-12 h-12 text-gray-300 mx-auto mb-3" />
                     <h3 className="text-lg font-medium text-gray-900">Tiada Data Guru</h3>
                     <p className="text-gray-500 mt-1 mb-4">Sila muat naik jadual PDF di panel Admin atau jana data demo.</p>
-                    <button onClick={generateMockData} className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 shadow-sm transition">
-                      Jana Data Demo
-                    </button>
                   </div>
                 )}
 
@@ -566,19 +535,6 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
   const [parseResult, setParseResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Manual Override State
-  const updateTeacherStatus = async (teacherId, status, location) => {
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'guru', teacherId);
-      await updateDoc(docRef, {
-        status_override: status,
-        lokasi_override: location
-      });
-    } catch (e) {
-      console.error("Gagal kemaskini status", e);
-    }
-  };
-
   // --- PDF & AI PROCESSING LOGIC ---
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
@@ -592,7 +548,7 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
     setParseResult(null);
 
     try {
-      // 1. Extract text using pdf.js dengan Teknik SPATIAL SORTING (Kekalkan bentuk jadual)
+      // 1. Extract text using pdf.js dengan Teknik SPATIAL SORTING
       const pdfjsLib = window['pdfjs-dist/build/pdf'];
       if (!pdfjsLib) throw new Error("PDF Library belum sedia. Sila cuba sebentar lagi.");
       
@@ -606,15 +562,12 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
         
-        // Dapatkan koordinat X dan Y untuk setiap teks bagi mengekalkan struktur jadual
         const items = content.items.map(item => ({
           str: item.str.trim(),
-          x: item.transform[4], // Posisi X (lajur)
-          y: item.transform[5]  // Posisi Y (baris)
+          x: item.transform[4],
+          y: item.transform[5]
         })).filter(item => item.str.length > 0);
 
-        // Susun berdasarkan paksi Y (dari atas ke bawah, PDF bermula dari bawah jadi Y besar ke kecil)
-        // Jika Y hampir sama (dalam margin 5px), susun mengikut paksi X (kiri ke kanan)
         items.sort((a, b) => {
           if (Math.abs(a.y - b.y) > 5) {
             return b.y - a.y; 
@@ -626,18 +579,18 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
         let pageText = "";
         for (const item of items) {
           if (currentY === null || Math.abs(currentY - item.y) > 5) {
-            pageText += "\n"; // Baris baru
+            pageText += "\n"; 
             currentY = item.y;
           } else {
-            pageText += " \t| "; // Pemisah lajur supaya AI nampak bentuk jadual
+            pageText += " \t| "; 
           }
           pageText += item.str;
         }
         extractedText += pageText + "\n\n--- MUKA SURAT SETERUSNYA ---\n\n";
       }
 
-      // 2. Hantar ke Gemini AI dengan Prompt yang Dipertingkat (Fine-tuned for School Timetables)
-      const apiKey = ""; // Disuntik oleh persekitaran
+      // 2. Hantar ke Gemini AI dengan Prompt yang Dipertingkat
+      const apiKey = "AIzaSyAbyj3Kkvw_zaWBUYbpN0DPIA0XO2oBNsk"; 
       const systemPrompt = `
       Anda adalah pakar penganalisis data jadual waktu sekolah (OCR + NLP) yang sangat tepat.
       Teks di bawah diekstrak daripada PDF jadual waktu sekolah. Ia telah disusun mengekalkan struktur baris dan lajur menggunakan pemisah " | ".
@@ -667,12 +620,12 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
       
       PANDUAN PENTING UNTUK KETEPATAN:
       1. Jika sel mengandungi cantuman Kelas & Subjek (cth: "5 AMANAH MATEMATIK" atau "5A / MT"), pisahkan dengan bijak.
-      2. Gabungkan slot masa yang berturutan untuk subjek dan kelas yang sama (cth: jika 07:30-08:00 dan 08:00-08:30 mengajar 5 Amanah Matematik, jadikan satu rekod: masa_mula: 07:30, masa_tamat: 08:30).
+      2. Gabungkan slot masa yang berturutan untuk subjek dan kelas yang sama.
       3. Singkatan hari: ISN=Isnin, SEL=Selasa, RAB=Rabu, KHA=Khamis, JUM=Jumaat.
       4. Abaikan garisan kosong atau teks yang tidak relevan.
       `;
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -692,6 +645,58 @@ function AdminPanel({ user, db, appId, teachers, schedules, kelasGanti, ketiadaa
     } catch (err) {
       console.error(err);
       setErrorMsg("Ralat mengekstrak atau memproses PDF: " + err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const simpanDataAi = async () => {
+    if (!parseResult) return;
+    setIsProcessing(true);
+    try {
+      const guruIdMap = {};
+      const batch = writeBatch(db);
+
+      // 1. Simpan Guru
+      for (const g of parseResult.guru) {
+        const existingTeacher = teachers.find(t => t.nama.toLowerCase() === g.nama.toLowerCase());
+        let guruId;
+        if (existingTeacher) {
+          guruId = existingTeacher.id;
+        } else {
+          const newDocRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'guru'));
+          batch.set(newDocRef, { nama: g.nama, subjek: g.subjek });
+          guruId = newDocRef.id;
+        }
+        guruIdMap[g.nama] = guruId;
+      }
+
+      // 2. Simpan Jadual
+      for (const j of parseResult.jadual) {
+        const guruId = guruIdMap[j.guru_nama];
+        if (guruId) {
+          const newDocRef = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'jadual'));
+          batch.set(newDocRef, {
+            guru_id: guruId,
+            hari: j.hari,
+            masa_mula: j.masa_mula,
+            masa_tamat: j.masa_tamat,
+            kelas: j.kelas,
+            subjek: j.subjek,
+            lokasi: j.lokasi || 'Bilik Darjah'
+          });
+        }
+      }
+
+      await batch.commit();
+
+      setParseResult(null);
+      setActiveTab('guru');
+      setErrorMsg("Data jadual berjaya disimpan ke pangkalan data!"); 
+      setTimeout(() => setErrorMsg(''), 4000);
+    } catch (e) {
+      console.error(e);
+      setErrorMsg("Gagal menyimpan ke pangkalan data.");
     } finally {
       setIsProcessing(false);
     }
@@ -909,14 +914,11 @@ function ReliefManager({ user, db, appId, teachers, schedules, kelasGanti, ketia
       const existing = kelasGanti.find(kg => kg.jadual_id === jadualId && kg.tarikh === selectedDate);
       if (existing) {
         if (!guruGantiId) {
-          // Delete
           await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'kelas_ganti', existing.id));
         } else {
-          // Update
           await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'kelas_ganti', existing.id), { guru_ganti_id: guruGantiId });
         }
       } else if (guruGantiId) {
-        // Add
         await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'kelas_ganti'), {
           tarikh: selectedDate,
           jadual_id: jadualId,
@@ -933,7 +935,6 @@ function ReliefManager({ user, db, appId, teachers, schedules, kelasGanti, ketia
     const slotStart = timeToMins(slot.masa_mula);
     const slotEnd = timeToMins(slot.masa_tamat);
     
-    // Guru selain dari guru yang sedang dinilai
     let free = teachers.filter(t => t.id !== slot.guru_id);
     
     // 1. Buang guru yang JUGA tidak hadir / ketiadaan pada waktu slot tersebut
@@ -942,7 +943,7 @@ function ReliefManager({ user, db, appId, teachers, schedules, kelasGanti, ketia
       const isAbsent = tAbsences.some(abs => {
         const absStart = timeToMins(abs.masa_mula);
         const absEnd = timeToMins(abs.masa_tamat);
-        return !(slotEnd <= absStart || slotStart >= absEnd); // Logik pertindihan masa
+        return !(slotEnd <= absStart || slotStart >= absEnd); 
       });
       return !isAbsent;
     });
